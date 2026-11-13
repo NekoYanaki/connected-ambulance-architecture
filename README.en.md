@@ -158,6 +158,39 @@ Every request goes through helmet, a CORS allow-list, rate limiting, mongo-sanit
 **Preparing for ISO/IEC 27001:** Wrote the system architecture diagram, data flow and information asset register. Set up role-based access control (RBAC) split by organization and user role. Defined the password policy (forced change on first login, hashed passwords). Set the audit log standard (patient data access, data changes and security events kept for 90 days). Defined a code review step before code goes to staging/production.
 
 
+## Deployment, Infrastructure & Security
+
+The system runs on a Windows Server VM on an enterprise cloud. One machine hosts production, a reduced build scoped for ISO certification, and dev, separated by Nginx virtual hosts.
+
+**Network & Firewall**
+- Only HTTP and HTTPS are open to the outside. HTTP is only there to redirect to HTTPS and to let ACME validate the domain when issuing certificates.
+- REST, WebSocket and calls to the video server all go over 443. The backend and media service listen on localhost only and are not exposed outside the machine.
+
+**Reverse Proxy & SSL/TLS**
+- Nginx is the single entry point. It routes `/api` to the backend and upgrades connections for WebSocket.
+- Certificates renew automatically through an ACME client. After renewal a script runs `nginx -t` first; if the config is broken it doesn't reload, so the running system isn't affected.
+- TLS 1.2 / 1.3 only, with HSTS and security headers (nosniff, frame options, referrer policy). Dev also sends noindex so it doesn't get indexed.
+- If someone sets production to skip certificate checks on outbound connections, the backend refuses to start.
+
+**Source Control (GitLab)**
+- `main` is production and every release is tagged, `dev` deploys to staging, new work branches off as `feature/*` or `fix/*`, and production changes go through `release/*` or `hotfix/*`.
+- No direct pushes to `main` or `dev`. Everything goes through a merge request.
+- An MR needs at least one approval from someone other than the author. Changes touching security, permissions or patient data also need tech lead approval. Merges are squashed.
+- Dev machines have git hooks that block committing `.env` files, scan for secrets before commit, and enforce the commit message format (Conventional Commits).
+
+**CI/CD**
+- The GitLab pipeline runs on every MR and on every change to `main`, `dev` or a tag. It checks the MR title, runs secret detection and a dependency audit for both frontend and backend, and fails on critical vulnerabilities.
+- Scan results are kept as artifacts for 1 year as vulnerability management evidence for audits.
+- Deployment still follows a written manual procedure, with PowerShell scripts for the repetitive parts such as reloading config and rotating logs.
+
+**Server Hardening (ISO/IEC 27001)**
+- Unused services and ports are disabled. Remote access to the server is limited to authorized admins.
+- Secrets live in the server's environment, not in the repo. The repo only has an example file.
+- Nginx logs are rotated daily by a Scheduled Task, compressed and kept for 90 days as evidence. The job runs at low priority so it doesn't compete with production.
+- The application audit log is kept for 90 days, and the database is backed up automatically every day with an RPO of 24 hours / RTO of 4 hours.
+- The certified scope is a separate build. Out-of-scope features aren't enabled at all (they return 404), which keeps the audit boundary clear.
+
+
 ## Core API
 
 Paths and data below are illustrative mock examples, not the real system's endpoints.

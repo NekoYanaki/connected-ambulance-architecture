@@ -158,6 +158,39 @@ login แยก limit ต่างหาก นับเป็นคู่ IP + 
 **การเตรียมระบบตามมาตรฐาน ISO/IEC 27001:** จัดทำเอกสาร System Architecture Diagram, Data Flow และทะเบียนทรัพย์สินสารสนเทศ (Information Asset Register) ของระบบ วางโครงสร้างการคุมสิทธิ์แบบ Role-Based Access Control (RBAC) แยกตามหน่วยงานและบทบาทผู้ใช้งาน กำหนดนโยบายรหัสผ่าน (บังคับเปลี่ยนรหัสผ่านครั้งแรก, การเข้ารหัส Password Hash) รวมถึงวางมาตรฐานการบันทึก Audit Log (เก็บประวัติการเข้าถึงข้อมูลผู้ป่วย การแก้ไขข้อมูล และเหตุการณ์ด้านความปลอดภัยย้อนหลัง 90 วัน) และกำหนดขั้นตอน Code Review ก่อนนำโค้ดขึ้น Staging/Production
 
 
+## Deployment, Infrastructure & Security
+
+ระบบรันบน Windows Server ที่เป็น VM บน enterprise cloud เครื่องเดียวรองรับทั้ง production, ชุดที่ตัดขอบเขตไว้สำหรับรับรอง ISO และ dev โดยแยกกันด้วย virtual host ของ Nginx
+
+**Network & Firewall**
+- เปิดจากภายนอกแค่ HTTP กับ HTTPS พอร์ต HTTP มีไว้ redirect ไป HTTPS และให้ ACME ยืนยันโดเมนตอนออกใบรับรองเท่านั้น
+- REST, WebSocket และการเรียก video server วิ่งผ่าน 443 ทั้งหมด ตัว backend กับ media service ฟังแค่ localhost ไม่เปิดออกนอกเครื่อง
+
+**Reverse Proxy & SSL/TLS**
+- Nginx เป็นทางเข้าทางเดียว ส่ง `/api` ไป backend และ upgrade connection ให้ WebSocket
+- ใบรับรองต่ออายุอัตโนมัติผ่าน ACME client หลังต่ออายุจะรัน script ที่สั่ง `nginx -t` ก่อน ถ้า config ผิดจะไม่ reload ระบบที่รันอยู่ไม่สะดุด
+- เปิดเฉพาะ TLS 1.2 / 1.3 มี HSTS และ security header (nosniff, frame options, referrer policy) ส่วน dev ใส่ noindex กันถูก index
+- ถ้ามีคนตั้งค่าให้ข้ามการตรวจ certificate ของการเชื่อมต่อขาออกบน production ตัว backend จะไม่ยอม start
+
+**Source Control (GitLab)**
+- `main` คือ production ทุก release ติด tag เวอร์ชัน, `dev` ใช้ขึ้น staging, งานใหม่แตกเป็น `feature/*` หรือ `fix/*` และขึ้น production ผ่าน `release/*` หรือ `hotfix/*`
+- ห้าม push ตรงเข้า `main` กับ `dev` ต้องผ่าน Merge Request เท่านั้น
+- MR ต้องมีคนที่ไม่ใช่ผู้เขียน approve อย่างน้อย 1 คน งานที่แตะ security, สิทธิ์ หรือข้อมูลผู้ป่วย ต้องให้ tech lead approve เพิ่ม แล้ว merge แบบ squash
+- เครื่อง dev มี git hook กัน commit ไฟล์ `.env` สแกนหา secret ก่อน commit และบังคับรูปแบบ commit message (Conventional Commits)
+
+**CI/CD**
+- GitLab pipeline รันทุก MR และทุกครั้งที่มีอะไรเข้า `main`, `dev` หรือติด tag มีขั้นตรวจชื่อ MR, secret detection และ dependency audit ของทั้ง frontend และ backend ถ้าเจอช่องโหว่ระดับ critical จะไม่ผ่าน
+- ผลสแกนเก็บเป็น artifact 1 ปี ไว้ใช้เป็นหลักฐานการจัดการช่องโหว่ตอน audit
+- การ deploy ยังทำตามขั้นตอนที่เขียนไว้แบบ manual มี PowerShell script ช่วยงานที่ทำซ้ำ เช่น reload config และ rotate log
+
+**Server Hardening (ISO/IEC 27001)**
+- ปิด service และพอร์ตที่ไม่ได้ใช้ remote access เข้าเครื่องได้เฉพาะผู้ดูแลที่ได้รับสิทธิ์
+- secret อยู่ใน environment ของเครื่อง ไม่อยู่ใน repo ใน repo มีแค่ไฟล์ตัวอย่าง
+- log ของ Nginx rotate ทุกวันด้วย Scheduled Task บีบอัดแล้วเก็บ 90 วันเป็นหลักฐาน และรันด้วย priority ต่ำ ไม่ให้แย่งทรัพยากร production
+- audit log ของแอปเก็บ 90 วัน และ backup ฐานข้อมูลอัตโนมัติทุกวัน ตั้งเป้า RPO 24 ชม. / RTO 4 ชม.
+- ชุดที่ใช้ขอรับรองเป็น build แยก ฟีเจอร์ที่อยู่นอกขอบเขตไม่ถูกเปิดเลย (เรียกแล้วได้ 404) ขอบเขตที่ auditor ตรวจจึงชัดเจน
+
+
 ## Core API
 
 path และข้อมูลด้านล่างเป็นตัวอย่างสมมติ ไม่ใช่ endpoint จริงของระบบ
